@@ -1,0 +1,104 @@
+# azure-pipelines.yml
+# Pipeline de QE: smoke en cada push, regresión solo si smoke pasa.
+# Colócalo en la raíz del repo (junto a pytest.ini).
+
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+
+pool:
+  vmImage: 'ubuntu-latest'   # Linux: más rápido y barato que Windows
+
+stages:
+  # ============================================================
+  # STAGE 1: SMOKE - rápido, corre en cada push (quality gate)
+  # ============================================================
+  - stage: Smoke
+    displayName: 'Smoke Tests'
+    jobs:
+      - job: smoke
+        displayName: 'Correr smoke tests'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Usar Python 3.11'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install pytest pytest-html playwright
+              playwright install chromium --with-deps
+            displayName: 'Instalar dependencias'
+
+          - script: |
+              pytest -m smoke --junitxml=results/smoke-junit.xml --html=results/smoke-report.html --self-contained-html
+            displayName: 'Ejecutar pytest -m smoke'
+
+          # Publica resultados en la pestaña "Tests" de Azure DevOps
+          - task: PublishTestResults@2
+            condition: always()   # publica aunque los tests fallen
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'results/smoke-junit.xml'
+              testRunTitle: 'Smoke Tests'
+
+          # Guarda el reporte HTML y screenshots como artefactos descargables
+          - task: PublishBuildArtifacts@1
+            condition: always()
+            inputs:
+              pathToPublish: 'results'
+              artifactName: 'smoke-report'
+
+          - task: PublishBuildArtifacts@1
+            condition: failed()   # screenshots solo existen si algo falló
+            inputs:
+              pathToPublish: 'screenshots'
+              artifactName: 'smoke-screenshots'
+
+  # ============================================================
+  # STAGE 2: REGRESIÓN - solo corre si Smoke pasó (quality gate)
+  # ============================================================
+  - stage: Regression
+    displayName: 'Regression Tests'
+    dependsOn: Smoke
+    condition: succeeded()   # <-- este es el quality gate
+    jobs:
+      - job: regression
+        displayName: 'Correr regresión en paralelo'
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.11'
+            displayName: 'Usar Python 3.11'
+
+          - script: |
+              python -m pip install --upgrade pip
+              pip install pytest pytest-html pytest-xdist playwright
+              playwright install chromium --with-deps
+            displayName: 'Instalar dependencias'
+
+          # -n 2 = ejecución en paralelo con pytest-xdist
+          - script: |
+              pytest -m regression -n 2 --junitxml=results/regression-junit.xml --html=results/regression-report.html --self-contained-html
+            displayName: 'Ejecutar pytest -m regression (paralelo)'
+
+          - task: PublishTestResults@2
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'results/regression-junit.xml'
+              testRunTitle: 'Regression Tests'
+
+          - task: PublishBuildArtifacts@1
+            condition: always()
+            inputs:
+              pathToPublish: 'results'
+              artifactName: 'regression-report'
+
+          - task: PublishBuildArtifacts@1
+            condition: failed()
+            inputs:
+              pathToPublish: 'screenshots'
+              artifactName: 'regression-screenshots'
